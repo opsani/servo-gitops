@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+'''
+Optune 'adjust' driver for gitops.  The present implementation is limited to
+pushing changes in YAML descriptors to a git repository via SSH.
+(C) 2018, Opsani.
+
+use:
+adjust --version
+adjust --info
+adjust --query app_name
+adjust app_name < <adjust-stdin-file.json>
+
+This driver requires a YAML configuration file placed at a fixed location (see
+CFG_FPATH constant).  Example config:
+
+gitops:
+    git_url:    <val>                 # REQUIRED:  URL of git repository to clone
+    git_branch: <val>                 # optional:  branch name
+    pre_cmd:    <val>                 # optional:  pre-adjust shell command
+    post_cmd:   <val>                 # optional:  post-adjust shell command
+    components:                       # REQUIRED:  at least one component
+        c1:                           # REQUIRED:  component / service name
+            git_file: <val>           # REQUIRED:  fpath of YAML desc to modify
+                                      #            (relative repository root)
+            settings:                 # REQUIRED:  at least one setting
+                cpu:                  # REQUIRED:  setting name
+                    key_path: <val>   # REQUIRED:  list of keys which locate
+                                      #            setting value in git_file
+                    value:    <val>   # optional:  default value (ignored)
+                    min:      <val>   # optional:  minimum value
+                    max:      <val>   # optional:  maximum value
+                    type:     <val>   # optional:  setting type (defaults to 'range')
+                    step:     <val>   # optional:  step size (ignored)
+                n_apache_workers:
+                    key_path: <val>
+            dependencies:             # optional:  dependent modification(s)
+                mem:
+                    key_path: <val>
+                    formula:  <val>   # formula for computing value - may ref
+                                      # "cpu" or "n_apache_workers" vars
+        c2:
+            git_file: <val>
+            settings:
+                ...etc.
+'''
+
+import os
+import ruamel.yaml
+import shutil
+import subprocess
+import time
+
+from six import string_types
+from adjust import Adjust
+
+DESC = 'GitOps (YAML descriptor) adjust driver for Opsani Optune'
+VERSION = '1.0.0'
+HAS_CANCEL = False
+CFG_FPATH = './config.yaml'
+
+class GitOps(Adjust):
+
+    def query(self):
+        '''
+        Return application (adjust) description with current values for all
+        settings as obtained from git repo YAML descriptor(s) as specified for
+        this driver in the servo config file.
+        Note:  this requires the app to be in a stable deployed state so that
+        what is deployed matches what is in the git repo.  @@TBD:  verify this.
+        '''
+
+        # acquire driver context in preparation for action
+        self._acquire_context()
+
+        # clone git repository to local directory
+        self._clone_repo()
+
+        # iterate over comps and update qval (the query return value)
+        qval = {'components': {}}
+        for comp_name, comp in self.cfg['components'].items():
+
+            # read git_file into dict
+            git_desc = self._get_repo_desc(comp['git_file'])
+
+            # construct settings dict for this comp with values from git_desc
+            settings = {}
+            for setting_name, setting in comp['settings'].items():
+                git_setting_value = self._nget(git_desc, setting['key_path'])
+                assert git_setting_value is not None, \
+                    'Setting {} key_path {} does not exist in repo file {}'.format(
+                    setting_name, setting['key_path'], comp['git_file'])
+                sd = {'value':  git_setting_value}
+
+                # add optional setting 'type' (range), 'step', 'min', and 'max'
+                sd['type'] = setting.get('type', 'range')
+                for sn in ('step', 'min', 'max'):
+                    if setting.get(sn) is not None:
+                        sd[sn] = setting[sn]
+
+                settings[setting_name] = sd
+
+            # add component to query return value
+            qval['components'][comp_name] = {'settings': settings}
+
+         # destroy cloned repo dir
+        self._destroy_repo()
+
+        return qval
+
+
+    def adjust(self):
+        '''
+        Adjust the settings values in the repository YAML descriptor(s) in
+        accord with the input values from stdin (self.input_data).
+        Note:  this driver does NOT effect deployment of these changes itself;
+        nor does it verify such changes are effected.  The pre- and post- adjust
+        freeform shell commands are available to perform these operations as
+        required.
+        '''
+
+        # acquire driver context in preparation for action
+        self._acquire_context()
+
+        # validate driver input (e.g., new settings values from stdin)
+        assert 'application' in self.input_data, \
+            'Invalid input:  missing application key'
+        assert 'components' in self.input_data['application'], \
+            'Invalid input:  missing application.components key'
+        in_comps = self.input_data['application']['components']
+
+        # iterate over configured components and verify each setting for each
+        # component is represented in the input data
+        for comp_name, comp in self.cfg['components'].items():
+            assert comp_name in in_comps, \
+                'Invalid input:  missing component {}'.format(comp_name)
+            in_settings = in_comps[comp_name].get('settings')
+            assert isinstance(in_settings, dict) and len(in_settings) > 0, \
+                'Invalid input:  component {} missing settings'.format(comp_name)
+
+            # iterate over and verify settings
+            for setting_name in comp['settings'].keys():
+                assert setting_name in in_settings.keys(), \
+                    'Invalid input:  component {} missing setting {}'.format(
+                    comp_name, setting_name)
+                assert in_settings[setting_name].get('value') is not None, \
+                    'Invalid input:  component {} setting {} missing value'.format(
+                    comp_name, setting_name)
+
+        # execute pre_cmd, if any (e.g., stop app services)
+        if self.cfg.get('pre_cmd') is not None:
+            self._run_shell_command(self.cfg.get('pre_cmd'), 'User pre-command')
+
+        # clone git repository to local directory
+        self._clone_repo()
+
+        # iterate over components and for each modify the configured git_file
+        # YAML descriptor according to the input data
+        for comp_name, comp in self.cfg['components'].items():
+
+            # read comp git_file (YAML descriptor)
+            desc = self._get_repo_desc(comp['git_file'])
+            desc_modified = False
+
+            # iterate over comp settings and update desc dictionary as needed
+            for setting_name, setting in comp['settings'].items():
+
+                # determine setting value in git repo and in input data
+                git_val = self._nget(desc, setting['key_path'])
+                assert git_val is not None, \
+                    'Component {} setting {} key_path {} value not present in git_file {}'.format(
+                    comp_name, setting_name, setting['key_path'], comp['git_file'])
+                input_val = in_comps[comp_name]['settings'][setting_name]['value']
+
+                # convert Optune setting input value to value as it should be
+                # set in the git_file (e.g., 0.75 cpu cores as float to '750m'
+                # millicores as string)
+                # @@TBD
+
+                # update desc dictionary on key_path to input_val
+                if git_val != input_val:
+                    self._nput(desc, setting['key_path'].copy(), input_val)
+                    desc_modified = True
+
+            # iterate over comp dependent changes and update desc dictionary
+            # @@TBD
+
+            # write comp git_file (YAML descriptor) if it was modified
+            if desc_modified:
+                self._put_repo_desc(desc, comp['git_file'])
+
+        # git commit & push changes, if any
+        self._update_repo()
+
+        # destroy cloned repo dir
+        self._destroy_repo()
+
+        # execute post_cmd, if any (e.g., verify app services are up)
+        if self.cfg.get('post_cmd') is not None:
+            self._run_shell_command(self.cfg.get('post_cmd'), 'User post-command')
+
+
+    # helper:  clone git repo (destroy clone first if it already exists)
+    def _clone_repo(self):
+        self._destroy_repo()
+        cmd = ['git','clone','--quiet','--verbose','--depth','1']
+        if self.cfg.get('git_branch') is not None:
+            cmd.extend(['--branch', self.cfg['git_branch']])
+        cmd.append(self.cfg['git_url'])
+        cmd.append(os.path.join(self.cwd, 'clone'))
+        self._run_command(cmd)
+
+    # helper:  destroy clone of git repo
+    def _destroy_repo(self):
+        if os.path.exists(self.clone_dir):
+            shutil.rmtree(self.clone_dir)
+
+    # helper:  return dict of YAML descriptor from cloned repo
+    def _get_repo_desc(self, git_file):
+        fpath = os.path.join(self.clone_dir, git_file)
+        yaml = ruamel.yaml.YAML(typ='rt')
+        try:
+            fo = open(fpath)
+            desc = yaml.load(fo)
+        except IOError as e:
+            raise Exception('Cannot read from {}:  {}'.format(fpath, e.strerror))
+        except yaml.error.YAMLError as e:
+            raise Exception('Syntax error in {}:  {}'.format(fpath, str(e)))
+        fo.close()
+        return desc
+
+    # helper:  save dict as YAML descriptor in cloned repo
+    def _put_repo_desc(self, desc, git_file):
+        fpath = os.path.join(self.clone_dir, git_file)
+        yaml = ruamel.yaml.YAML(typ='rt')
+        yaml.default_flow_style = False
+        try:
+            fo = open(fpath, 'w')
+            yaml.dump(desc, fo)
+        except IOError as e:
+            raise Exception('Cannot read from {}:  {}'.format(fpath, e.strerror))
+        except yaml.error.YAMLError as e:
+            raise Exception('Syntax error in {}:  {}'.format(fpath, str(e)))
+        fo.close()
+
+    # helper:  commit and push changes of cloned repo
+    def _update_repo(self):
+
+        # determine if there are any changes to tracked files:  if so then the
+        # command "git diff-index --quiet HEAD --" exits with a non-zero value
+        os.chdir(self.clone_dir)
+        try:
+            self._run_command(['git', 'diff-index', '--quiet', 'HEAD', '--'])
+        except Exception as e:
+            pass
+        else:
+            os.chdir(self.cwd)
+            return
+
+        # add all changed files, commit and push
+        commit_msg = 'Optune Gitops adjust driver automated commit #{}'.format(
+            int(round(time.time() * 1000)))
+        self._run_command(['git', 'add', '--all', '--verbose'])
+        self._run_command(['git', 'commit', '--verbose', '-m', commit_msg])
+        self._run_command(['git', 'push', '--verbose'])
+
+        os.chdir(self.cwd)
+
+    # helper:  acquire driver context in preparation for action
+    def _acquire_context(self):
+
+        # parse driver config
+        self._parse_config()
+
+        # save directory info
+        self.cwd = os.getcwd()
+        self.clone_dir = os.path.join(self.cwd, 'clone')
+
+    # helper:  parse the user defined servo config for this driver
+    def _parse_config(self):
+
+        # load YAML config file (raise any unhandled exception)
+        yaml = ruamel.yaml.YAML()
+        try:
+            fo = open(CFG_FPATH)
+            desc = yaml.load(fo)
+        except IOError as e:
+            raise Exception('Cannot read configuration from {}:  {}'.format(
+                CFG_FPATH, e.strerror))
+        except yaml.error.YAMLError as e:
+            raise Exception('Syntax error in {}:  {}'.format(CFG_FPATH, str(e)))
+        fo.close()
+
+        # validate:  gitops config
+        cfg = desc.get('gitops')
+        assert isinstance(cfg, dict), 'No gitops configuration in {}'.format(CFG_FPATH)
+        assert isinstance(cfg.get('git_url'), string_types), \
+            'No git_url string specified in {}'.format(CFG_FPATH)
+        comps = cfg.get('components')
+        assert isinstance(comps, dict) and len(comps) > 0, \
+            'No components specified in {}'.format(CFG_FPATH)
+
+        # validate:  gitops config components
+        for comp_name, comp in comps.items():
+            assert isinstance(comp, dict), \
+                'Component {} config is not a dictionary in {}'.format(comp_name, CFG_FPATH)
+            assert isinstance(comp.get('git_file'), string_types), \
+                'Component {} missing git_file string spec in {}'.format(comp_name, CFG_FPATH)
+            settings = comp.get('settings')
+            assert isinstance(settings, dict) and len(settings) > 0, \
+                'Component {} has no settings specified in {}'.format(comp_name, CFG_FPATH)
+            for sk, sv in settings.items():
+                assert isinstance(sv.get('key_path'), list) and len(sv.get('key_path')) > 0, \
+                    'Component {} setting {} missing key_path spec in {}'.format(
+                    comp_name, sk, CFG_FPATH)
+            deps = comp.get('dependencies', {})
+            assert isinstance(deps, dict), \
+                'Component {} dependencies spec is not a dict in {}'.format(comp_name, CFG_FPATH)
+            for dk, dv in deps.items():
+                assert isinstance(dv.get('key_path'), list) and len(dv.get('key_path')) > 0, \
+                    'Component {} dependency {} missing key_path spec in {}'.format(
+                    comp_name, dk, CFG_FPATH)
+                assert isinstance(dv.get('formula'), string_types), \
+                    'Component {} dependency {} missing formula spec in {}'.format(
+                    comp_name, dk, CFG_FPATH)
+
+        self.cfg = cfg
+
+    # helper:  run a Bash shell command and raise an Exception on failure
+    # note:  if cmd is a string, this supports shell pipes, environment variable
+    # expansion, etc.  The burden of safety is entirely on the user.
+    def _run_shell_command(self, cmd, cmd_type='Driver shell command'):
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            shell=True, executable='/bin/bash')
+        msg = "cmd '{}', exit code {}, stdout {}, stderr {}".format(cmd,
+            res.returncode, res.stdout, res.stderr)
+        assert res.returncode == 0, '{} failed:  {}'.format(cmd_type, msg)
+        self.debug('{}:  {}'.format(cmd_type, msg))
+
+    # helper:  run a command as a list of strings (without a shell) and raise an
+    # exception on failure
+    def _run_command(self, cmd):
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            shell=False)
+        msg = "{}, exit code {}, stdout {}, stderr {}".format(cmd,
+            res.returncode, res.stdout, res.stderr)
+        assert res.returncode == 0, 'Command failed:  {}'.format(msg)
+        self.debug('Command:  {}'.format(msg))
+
+    # helper:  return the nested indexed value of the passed dict or the default
+    # value if any indice is non-existant OR the nested indexed value is None
+    def _nget(self, d, idxs, default_value=None):
+        try:
+            xs = idxs.copy()
+            val = d[(xs.pop(0))]
+            for i in xs:
+                val = val[i]
+            return val if val is not None else default_value
+        except Exception as e:
+            return default_value
+
+    # helper:  set value in input dictionary using nested index list:  this
+    # recursive function modifies the input dict, and empties out the input list
+    # of index values - pass a copy for idxs if you want the original preserved
+    def _nput(self, d, idxs, val):
+        if len(idxs) == 0:
+            return
+        if len(idxs) == 1:
+            d[idxs[0]] = val
+            return
+        self._nput(d[(idxs.pop(0))], idxs, val)
+
+
+if __name__ == '__main__':
+    driver = GitOps(VERSION, DESC, HAS_CANCEL)
+    driver.run()
