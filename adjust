@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 '''
-Optune 'adjust' driver for gitops.  The present implementation is limited to
+Optune adjust driver for GitOps.  The present implementation is limited to
 pushing changes in YAML descriptors to a git repository via SSH.
 (C) 2018, Opsani.
 
@@ -52,11 +52,12 @@ import time
 
 from six import string_types
 from adjust import Adjust
+import formula
 
-DESC = 'GitOps (YAML descriptor) adjust driver for Opsani Optune'
-VERSION = '1.0.0'
+DESC       = 'GitOps (YAML descriptor) adjust driver for Opsani Optune'
+VERSION    = '1.0.0'
 HAS_CANCEL = False
-CFG_FPATH = './config.yaml'
+CFG_FPATH  = './config.yaml'
 
 class GitOps(Adjust):
 
@@ -102,7 +103,7 @@ class GitOps(Adjust):
             # add component to query return value
             qval['components'][comp_name] = {'settings': settings}
 
-         # destroy cloned repo dir
+         # destroy cloned repo
         self._destroy_repo()
 
         return qval
@@ -121,15 +122,15 @@ class GitOps(Adjust):
         # acquire driver context in preparation for action
         self._acquire_context()
 
-        # validate driver input (e.g., new settings values from stdin)
+        # validate driver input
         assert 'application' in self.input_data, \
             'Invalid input:  missing application key'
         assert 'components' in self.input_data['application'], \
             'Invalid input:  missing application.components key'
         in_comps = self.input_data['application']['components']
 
-        # iterate over configured components and verify each setting for each
-        # component is represented in the input data
+        # validate driver input:  iterate over configured components and verify
+        # each setting for each component is represented in the input data
         for comp_name, comp in self.cfg['components'].items():
             assert comp_name in in_comps, \
                 'Invalid input:  missing component {}'.format(comp_name)
@@ -162,6 +163,7 @@ class GitOps(Adjust):
             desc_modified = False
 
             # iterate over comp settings and update desc dictionary as needed
+            formula_vars = {}
             for setting_name, setting in comp['settings'].items():
 
                 # determine setting value in git repo and in input data
@@ -171,10 +173,20 @@ class GitOps(Adjust):
                     comp_name, setting_name, setting['key_path'], comp['git_file'])
                 input_val = in_comps[comp_name]['settings'][setting_name]['value']
 
+                # include this setting and value in formula_vars:  coerce the
+                # formula value to integer or float if input is string
+                form_val = input_val
+                if isinstance(form_val, string_types):
+                    if isinstance(git_val, int):
+                        form_val = int(form_val)
+                    else:
+                        form_val = float(form_val)
+                formula_vars[setting_name] = form_val
+
                 # convert Optune setting input value to value as it should be
                 # set in the git_file (e.g., 0.75 cpu cores as float to '750m'
                 # millicores as string)
-                # @@TBD
+                # @@TBD:  to be implemented as required by the use case
 
                 # update desc dictionary on key_path to input_val
                 if git_val != input_val:
@@ -182,7 +194,17 @@ class GitOps(Adjust):
                     desc_modified = True
 
             # iterate over comp dependent changes and update desc dictionary
-            # @@TBD
+            deps = comp.get('dependencies', {})
+            for dep_name, dep in deps.items():
+                key_path = dep['key_path'].copy()
+                git_val = self._nget(desc, key_path)
+                dep_val = formula.evaluate(dep['formula'], formula_vars)
+                self.debug('{}.{}.{} formula: evaluated {} with {} to {}'.format(
+                    comp_name, setting_name, dep_name, dep['formula'],
+                    formula_vars, dep_val))
+                if git_val != dep_val:
+                    self._nput(desc, key_path, dep_val)
+                    desc_modified = True
 
             # write comp git_file (YAML descriptor) if it was modified
             if desc_modified:
@@ -191,7 +213,7 @@ class GitOps(Adjust):
         # git commit & push changes, if any
         self._update_repo()
 
-        # destroy cloned repo dir
+        # destroy cloned repo
         self._destroy_repo()
 
         # execute post_cmd, if any (e.g., verify app services are up)
@@ -246,7 +268,7 @@ class GitOps(Adjust):
     def _update_repo(self):
 
         # determine if there are any changes to tracked files:  if so then the
-        # command "git diff-index --quiet HEAD --" exits with a non-zero value
+        # command "git diff-index --quiet HEAD --" exits with a non-zero code
         os.chdir(self.clone_dir)
         try:
             self._run_command(['git', 'diff-index', '--quiet', 'HEAD', '--'])
@@ -257,7 +279,7 @@ class GitOps(Adjust):
             return
 
         # add all changed files, commit and push
-        commit_msg = 'Optune Gitops adjust driver automated commit #{}'.format(
+        commit_msg = 'Optune GitOps adjust driver automated commit #{}'.format(
             int(round(time.time() * 1000)))
         self._run_command(['git', 'add', '--all', '--verbose'])
         self._run_command(['git', 'commit', '--verbose', '-m', commit_msg])
@@ -359,8 +381,9 @@ class GitOps(Adjust):
             return default_value
 
     # helper:  set value in input dictionary using nested index list:  this
-    # recursive function modifies the input dict, and empties out the input list
-    # of index values - pass a copy for idxs if you want the original preserved
+    # recursive function modifies the input dict, and delete all but the first
+    # element of the input list of index values - pass a copy for idxs if you
+    # want the original preserved
     def _nput(self, d, idxs, val):
         if len(idxs) == 0:
             return
