@@ -219,7 +219,7 @@ class GitOps(Adjust):
         if self.cfg.get('git_branch') is not None:
             cmd.extend(['--branch', self.cfg['git_branch']])
         cmd.append(self.cfg['git_url'])
-        cmd.append(os.path.join(self.cwd, 'clone'))
+        cmd.append(self.clone_dir)
         self._run_command(cmd)
 
     # helper:  destroy clone of git repo
