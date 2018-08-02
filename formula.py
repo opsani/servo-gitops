@@ -10,7 +10,7 @@ GBL_SET = set(['abs', 'all', 'any', 'bool', 'complex', 'divmod', 'enumerate',
 def get_gbl():
     '''
     return a dict with set of globals to be passed as environment for the evaluation
-    This includes built-in functions as well as the math functions/constants.
+    This includes built-in functions, the math functions/constants, and str().
 
     Note: unless the returned dict has a __builtins__ element, Python will include
           all globals! see https://docs.python.org/3/library/functions.html#eval
@@ -22,7 +22,8 @@ def get_gbl():
     maths = { x:getattr(math,x) for x in dir(math) if not x.startswith('_') }
 
     # return all; order matters (see https://www.python.org/dev/peps/pep-0448/)
-    return { '__builtins__' : builtins, **maths }  # see docstring above re __builtins__
+    # see docstring above re __builtins__
+    return { '__builtins__' : builtins, **maths, **{'str': str} }
 
 def evaluate(expr, var):
     '''

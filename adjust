@@ -44,6 +44,7 @@ gitops:
                 ...etc.
 '''
 
+import formula
 import os
 import ruamel.yaml
 import shutil
@@ -52,7 +53,6 @@ import time
 
 from six import string_types
 from adjust import Adjust
-import formula
 
 DESC       = 'GitOps (YAML descriptor) adjust driver for Opsani Optune'
 VERSION    = '1.0.0'
@@ -172,16 +172,7 @@ class GitOps(Adjust):
                     'Component {} setting {} key_path {} value not present in git_file {}'.format(
                     comp_name, setting_name, setting['key_path'], comp['git_file'])
                 input_val = in_comps[comp_name]['settings'][setting_name]['value']
-
-                # include this setting and value in formula_vars:  coerce the
-                # formula value to integer or float if input is string
-                form_val = input_val
-                if isinstance(form_val, string_types):
-                    if isinstance(git_val, int):
-                        form_val = int(form_val)
-                    else:
-                        form_val = float(form_val)
-                formula_vars[setting_name] = form_val
+                formula_vars[setting_name] = input_val
 
                 # convert Optune setting input value to value as it should be
                 # set in the git_file (e.g., 0.75 cpu cores as float to '750m'
