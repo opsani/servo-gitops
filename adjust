@@ -58,6 +58,7 @@ DESC       = 'GitOps (YAML descriptor) adjust driver for Opsani Optune'
 VERSION    = '1.0.0'
 HAS_CANCEL = False
 CFG_FPATH  = './config.yaml'
+VAL_CONV   = ('str', 'int', 'str_int')
 
 class GitOps(Adjust):
 
@@ -90,6 +91,12 @@ class GitOps(Adjust):
                 assert git_setting_value is not None, \
                     'Setting {} key_path {} does not exist in repo file {}'.format(
                     setting_name, setting['key_path'], comp['git_file'])
+
+                # if setting has a value conversion (float to/from some kind),
+                # then take the float value of the git setting value
+                if setting.get('value_conv') is not None:
+                    git_setting_value = float(git_setting_value)
+
                 sd = {'value':  git_setting_value}
 
                 # add optional setting 'type' (range), 'step', 'min', and 'max'
@@ -172,12 +179,19 @@ class GitOps(Adjust):
                     'Component {} setting {} key_path {} value not present in git_file {}'.format(
                     comp_name, setting_name, setting['key_path'], comp['git_file'])
                 input_val = in_comps[comp_name]['settings'][setting_name]['value']
-                formula_vars[setting_name] = input_val
 
                 # convert Optune setting input value to value as it should be
                 # set in the git_file (e.g., 0.75 cpu cores as float to '750m'
-                # millicores as string)
-                # @@TBD:  to be implemented as required by the use case
+                # millicores as string):  present support only includes float
+                # value conversion, not units, etc. (@@TBD)
+                val_conv = setting.get('value_conv')
+                if val_conv == 'int':
+                    input_val = int(input_val)
+                elif val_conv == 'str':
+                    input_val = str(input_val)
+                elif val_conv == 'str_int':
+                    input_val = str(int(input_val))
+                formula_vars[setting_name] = input_val
 
                 # update desc dictionary on key_path to input_val
                 if git_val != input_val:
@@ -231,6 +245,7 @@ class GitOps(Adjust):
     def _get_repo_desc(self, git_file):
         fpath = os.path.join(self.clone_dir, git_file)
         yaml = ruamel.yaml.YAML(typ='rt')
+        yaml.preserve_quotes = True
         try:
             fo = open(fpath)
             desc = yaml.load(fo)
@@ -241,11 +256,14 @@ class GitOps(Adjust):
         fo.close()
         return desc
 
-    # helper:  save dict as YAML descriptor in cloned repo
+    # helper:  save dict as YAML descriptor in cloned repo - indentation is not
+    # necessarily preserved, but can be controlled with the yaml.indent setting
     def _put_repo_desc(self, desc, git_file):
         fpath = os.path.join(self.clone_dir, git_file)
         yaml = ruamel.yaml.YAML(typ='rt')
         yaml.default_flow_style = False
+        yaml.preserve_quotes = True
+        yaml.indent(mapping=2, sequence=4, offset=2) # change as desired
         try:
             fo = open(fpath, 'w')
             yaml.dump(desc, fo)
@@ -325,6 +343,11 @@ class GitOps(Adjust):
                 assert isinstance(sv.get('key_path'), list) and len(sv.get('key_path')) > 0, \
                     'Component {} setting {} missing key_path spec in {}'.format(
                     comp_name, sk, CFG_FPATH)
+                val_conv = sv.get('value_conv')
+                if val_conv is not None:
+                    assert val_conv in VAL_CONV, \
+                        'Component {} setting {} invalid value_conv {} (not in {})'.format(
+                        comp_name, sk, val_conv, VAL_CONV)
             deps = comp.get('dependencies', {})
             assert isinstance(deps, dict), \
                 'Component {} dependencies spec is not a dict in {}'.format(comp_name, CFG_FPATH)

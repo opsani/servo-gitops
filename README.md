@@ -85,6 +85,7 @@ Each named (e.g., `cpu` in the example above) setting in the `settings` section 
 * `min`:  an optional minimum value for the setting.
 * `max`:  an optional maximum value for the setting.
 * `type`:  an optional setting type.  Default `range`.
+* `val_conv`:  an optional conversion for setting values which are numbers (represented as floats for the purpose of optimization).  Valid values are any of `int` (convert to integer), `str` (convert to string) or `str_int` (convert to integer, then to string).  When propagating a setting value change to a YAML descriptor, the value is converted as indicated before output to YAML.
 
 Any component may include an optional `dependencies` section.  This section specifies any number of additional changes to make to the YAML descriptor based on the changes to values of settings.  Each such dependent change is named (e.g., `memory` in the example above) and supports the following configuration:
 
