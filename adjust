@@ -46,11 +46,11 @@ gitops:
 
 import formula
 import os
-import ruamel.yaml
 import shutil
 import subprocess
 import time
 
+from ruamel import yaml               # use stable version < 0.15
 from six import string_types
 from adjust import Adjust
 
@@ -244,11 +244,9 @@ class GitOps(Adjust):
     # helper:  return dict of YAML descriptor from cloned repo
     def _get_repo_desc(self, git_file):
         fpath = os.path.join(self.clone_dir, git_file)
-        yaml = ruamel.yaml.YAML(typ='rt')
-        yaml.preserve_quotes = True
         try:
             fo = open(fpath)
-            desc = yaml.load(fo)
+            desc = yaml.round_trip_load(fo, preserve_quotes=True)
         except IOError as e:
             raise Exception('Cannot read from {}:  {}'.format(fpath, e.strerror))
         except yaml.error.YAMLError as e:
@@ -258,15 +256,12 @@ class GitOps(Adjust):
 
     # helper:  save dict as YAML descriptor in cloned repo - indentation is not
     # necessarily preserved, but can be controlled with the yaml.indent setting
+    # note:  the block_seq_indent paramater may also be used, but sb < indent
     def _put_repo_desc(self, desc, git_file):
         fpath = os.path.join(self.clone_dir, git_file)
-        yaml = ruamel.yaml.YAML(typ='rt')
-        yaml.default_flow_style = False
-        yaml.preserve_quotes = True
-        yaml.indent(mapping=2, sequence=4, offset=2) # change as desired
         try:
             fo = open(fpath, 'w')
-            yaml.dump(desc, fo)
+            yaml.round_trip_dump(desc, fo, width=10000, indent=2)
         except IOError as e:
             raise Exception('Cannot read from {}:  {}'.format(fpath, e.strerror))
         except yaml.error.YAMLError as e:
@@ -310,10 +305,9 @@ class GitOps(Adjust):
     def _parse_config(self):
 
         # load YAML config file (raise any unhandled exception)
-        yaml = ruamel.yaml.YAML()
         try:
             fo = open(CFG_FPATH)
-            desc = yaml.load(fo)
+            desc = yaml.round_trip_load(fo, preserve_quotes=True)
         except IOError as e:
             raise Exception('Cannot read configuration from {}:  {}'.format(
                 CFG_FPATH, e.strerror))
