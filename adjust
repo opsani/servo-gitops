@@ -50,7 +50,8 @@ import shutil
 import subprocess
 import time
 
-from ruamel import yaml               # use stable version < 0.15
+import ruamel.yaml
+
 from six import string_types
 from adjust import Adjust
 
@@ -246,25 +247,41 @@ class GitOps(Adjust):
         fpath = os.path.join(self.clone_dir, git_file)
         try:
             fo = open(fpath)
-            desc = yaml.round_trip_load(fo, preserve_quotes=True)
+            if ruamel.yaml.version_info < (0, 15):
+                desc = ruamel.yaml.round_trip_load(fo, preserve_quotes=True)
+            else:
+                yml = ruamel.yaml.YAML(typ='rt')
+                yml.preserve_quotes = True
+                desc = yml.load(fo)
         except IOError as e:
             raise Exception('Cannot read from {}:  {}'.format(fpath, e.strerror))
-        except yaml.error.YAMLError as e:
+        except ruamel.yaml.error.YAMLError as e:
             raise Exception('Syntax error in {}:  {}'.format(fpath, str(e)))
         fo.close()
         return desc
 
     # helper:  save dict as YAML descriptor in cloned repo - indentation is not
-    # necessarily preserved, but can be controlled with the yaml.indent setting
-    # note:  the block_seq_indent paramater may also be used, but sb < indent
+    # necessarily preserved, but can be controlled with the indent settings
+    # provided by the version of ruamel in use
     def _put_repo_desc(self, desc, git_file):
         fpath = os.path.join(self.clone_dir, git_file)
         try:
             fo = open(fpath, 'w')
-            yaml.round_trip_dump(desc, fo, width=10000, indent=2)
+            if ruamel.yaml.version_info < (0, 15):
+                ruamel.yaml.round_trip_dump(desc, fo, width=10000, indent=2)
+            else:
+                yml = ruamel.yaml.YAML(typ='rt')
+                yml.preserve_quotes = True
+                yml.width = 10000
+
+                # for versions of ruamel which support yml.indent():  this is
+                # available in 0.15.50, but not in 0.15.23
+                #yml.indent(mapping=2, sequence=4, offset=2)
+
+                yml.dump(desc, fo)
         except IOError as e:
             raise Exception('Cannot read from {}:  {}'.format(fpath, e.strerror))
-        except yaml.error.YAMLError as e:
+        except ruamel.yaml.error.YAMLError as e:
             raise Exception('Syntax error in {}:  {}'.format(fpath, str(e)))
         fo.close()
 
@@ -307,11 +324,16 @@ class GitOps(Adjust):
         # load YAML config file (raise any unhandled exception)
         try:
             fo = open(CFG_FPATH)
-            desc = yaml.round_trip_load(fo, preserve_quotes=True)
+            if ruamel.yaml.version_info < (0, 15):
+                desc = ruamel.yaml.round_trip_load(fo, preserve_quotes=True)
+            else:
+                yml = ruamel.yaml.YAML(typ='rt')
+                yml.preserve_quotes = True
+                desc = yml.load(fo)
         except IOError as e:
             raise Exception('Cannot read configuration from {}:  {}'.format(
                 CFG_FPATH, e.strerror))
-        except yaml.error.YAMLError as e:
+        except ruamel.yaml.error.YAMLError as e:
             raise Exception('Syntax error in {}:  {}'.format(CFG_FPATH, str(e)))
         fo.close()
 
