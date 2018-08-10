@@ -10,9 +10,14 @@ def get_gbl():
           all globals! see https://docs.python.org/3/library/functions.html#eval
     '''
     # create a safe and desirable subset of the built-ins
-    builtins = {'abs':abs, 'bool':bool, 'float':float, 'int':int, 'len':len,
-        'list':list, 'map':map, 'max':max, 'min':min, 'pow':pow, 'round':round,
-        'set':set, 'sum':sum, 'True':True, 'False':False, 'None':None, 'str':str
+    builtins = {
+        'abs':abs, 'all':all, 'any':any, 'bool':bool, 'complex':complex,
+        'divmod':divmod, 'enumerate':enumerate, 'filter':filter, 'float':float,
+        'hash':hash, 'int':int, 'iter':iter, 'len':len, 'list':list, 'map':map,
+        'max':max, 'min':min, 'next':next, 'pow':pow, 'range':range,
+        'reversed':reversed, 'round':round, 'set':set, 'slice':slice,
+        'sorted':sorted, 'sum':sum, 'tuple':tuple, 'zip':zip, 'True':True,
+        'False':False, 'None':None, 'str':str
     }
 
     # create a full set of usable math functions and constants
