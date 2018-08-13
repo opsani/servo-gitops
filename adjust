@@ -268,11 +268,11 @@ class GitOps(Adjust):
         try:
             fo = open(fpath, 'w')
             if ruamel.yaml.version_info < (0, 15):
-                ruamel.yaml.round_trip_dump(desc, fo, width=10000, indent=2)
+                ruamel.yaml.round_trip_dump(desc, fo, width=120, indent=2)
             else:
                 yml = ruamel.yaml.YAML(typ='rt')
                 yml.preserve_quotes = True
-                yml.width = 10000
+                yml.width = 120
 
                 # for versions of ruamel which support yml.indent():  this is
                 # available in 0.15.50, but not in 0.15.23
