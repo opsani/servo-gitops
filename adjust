@@ -14,10 +14,12 @@ This driver requires a YAML configuration file placed at a fixed location (see
 CFG_FPATH constant).  Example config:
 
 gitops:
-    git_url:    <val>                 # REQUIRED:  URL of git repository to clone
-    git_branch: <val>                 # optional:  branch name
-    pre_cmd:    <val>                 # optional:  pre-adjust shell command
-    post_cmd:   <val>                 # optional:  post-adjust shell command
+    git_url:        <val>             # REQUIRED:  URL of git repository to clone
+    git_branch:     <val>             # optional:  branch name
+    pre_cmd:        <val>             # optional:  pre-adjust shell command
+    post_cmd:       <val>             # optional:  post-adjust shell command
+    pre_cmd_tout:   <val>             # optional:  pre-adjust cmd timeout seconds
+    post_cmd_tout:  <val>             # optional:  post-adjust cmd timeout seconds
     components:                       # REQUIRED:  at least one component
         c1:                           # REQUIRED:  component / service name
             git_file: <val>           # REQUIRED:  fpath of YAML desc to modify
@@ -45,6 +47,7 @@ gitops:
 '''
 
 import formula
+import json
 import os
 import shutil
 import subprocess
@@ -69,7 +72,8 @@ class GitOps(Adjust):
         settings as obtained from git repo YAML descriptor(s) as specified for
         this driver in the servo config file.
         Note:  this requires the app to be in a stable deployed state so that
-        what is deployed matches what is in the git repo.  @@TBD:  verify this.
+        what is deployed matches what is in the git repo.  @@TBD:  consider
+        using post_cmd to verify this in practice.
         '''
 
         # acquire driver context in preparation for action
@@ -129,6 +133,8 @@ class GitOps(Adjust):
 
         # acquire driver context in preparation for action
         self._acquire_context()
+        pre_cmd_tout = self.cfg.get('pre_cmd_tout')
+        post_cmd_tout = self.cfg.get('post_cmd_tout')
 
         # validate driver input
         assert 'application' in self.input_data, \
@@ -155,9 +161,16 @@ class GitOps(Adjust):
                     'Invalid input:  component {} setting {} missing value'.format(
                     comp_name, setting_name)
 
+        # process driver input:  control from Optune back-end; note that
+        # timeouts may be None
+        control = self.input_data.get('control',{}).get('userdata',{})
+        pre_cmd_tout = control.get('pre_cmd_tout', pre_cmd_tout)
+        post_cmd_tout = control.get('post_cmd_tout', post_cmd_tout)
+
         # execute pre_cmd, if any (e.g., stop app services)
         if self.cfg.get('pre_cmd') is not None:
-            self._run_shell_command(self.cfg.get('pre_cmd'), 'User pre-command')
+            self._run_shell_command(self.cfg.get('pre_cmd'), pre_cmd_tout,
+                'User pre-command')
 
         # clone git repository to local directory
         self._clone_repo()
@@ -205,7 +218,7 @@ class GitOps(Adjust):
                 key_path = dep['key_path'].copy()
                 git_val = self._nget(desc, key_path)
                 dep_val = formula.evaluate(dep['formula'], formula_vars)
-                self.debug('{}.{}.{} formula: evaluated {} with {} to {}'.format(
+                self._nfy('{}.{}.{} formula: evaluated {} with {} to {}'.format(
                     comp_name, setting_name, dep_name, dep['formula'],
                     formula_vars, dep_val))
                 if git_val != dep_val:
@@ -224,7 +237,8 @@ class GitOps(Adjust):
 
         # execute post_cmd, if any (e.g., verify app services are up)
         if self.cfg.get('post_cmd') is not None:
-            self._run_shell_command(self.cfg.get('post_cmd'), 'User post-command')
+            self._run_shell_command(self.cfg.get('post_cmd'), post_cmd_tout,
+                'User post-command')
 
 
     # helper:  clone git repo (destroy clone first if it already exists)
@@ -235,7 +249,7 @@ class GitOps(Adjust):
             cmd.extend(['--branch', self.cfg['git_branch']])
         cmd.append(self.cfg['git_url'])
         cmd.append(self.clone_dir)
-        self._run_command(cmd)
+        self._run_command(cmd, nfy=False)
 
     # helper:  destroy clone of git repo
     def _destroy_repo(self):
@@ -380,23 +394,26 @@ class GitOps(Adjust):
     # helper:  run a Bash shell command and raise an Exception on failure
     # note:  if cmd is a string, this supports shell pipes, environment variable
     # expansion, etc.  The burden of safety is entirely on the user.
-    def _run_shell_command(self, cmd, cmd_type='Driver shell command'):
+    def _run_shell_command(self, cmd, tout=None, cmd_type='Driver shell command'):
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            shell=True, executable='/bin/bash')
+            shell=True, timeout=tout, executable='/bin/bash')
         msg = "cmd '{}', exit code {}, stdout {}, stderr {}".format(cmd,
             res.returncode, res.stdout, res.stderr)
         assert res.returncode == 0, '{} failed:  {}'.format(cmd_type, msg)
-        self.debug('{}:  {}'.format(cmd_type, msg))
+        self._nfy('{}:  {}'.format(cmd_type, msg))
 
     # helper:  run a command as a list of strings (without a shell) and raise an
     # exception on failure
-    def _run_command(self, cmd):
+    def _run_command(self, cmd, nfy=True):
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             shell=False)
         msg = "{}, exit code {}, stdout {}, stderr {}".format(cmd,
             res.returncode, res.stdout, res.stderr)
         assert res.returncode == 0, 'Command failed:  {}'.format(msg)
-        self.debug('Command:  {}'.format(msg))
+        if not nfy:
+            self.debug('Command:  {}'.format(msg))
+            return
+        self._nfy('Command:  {}'.format(msg))
 
     # helper:  return the nested indexed value of the passed dict or the default
     # value if any indice is non-existant OR the nested indexed value is None
@@ -421,6 +438,13 @@ class GitOps(Adjust):
             d[idxs[0]] = val
             return
         self._nput(d[(idxs.pop(0))], idxs, val)
+
+    # helper:  print a msg to servo stderr (debug log) and log to the Optune
+    # back-end on stdout (JSON formatted)
+    def _nfy(self, msg):
+        self.debug(msg)
+        data = { 'progress': 0, 'message': msg }
+        print(json.dumps(data), flush=True)
 
 
 if __name__ == '__main__':

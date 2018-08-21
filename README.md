@@ -74,6 +74,8 @@ The `config.yaml` descriptor supports the following configuration:
 * `git_branch`:  git repository branch name.  Optional.
 * `pre_cmd`:  Bash shell command to execute prior to adjust.  This optional command may be a string or a list.
 * `post_cmd`:  Bash shell command to execute after measurement.  This optional command may be a string or a list.
+* `pre_cmd_tout`:  optional timeout in seconds for `pre_cmd`.
+* `post_cmd_tout`:  optional timeout in seconds for `post_cmd`.
 
 Each named (e.g., `c1` in the example above) component of the `components` section of `config.yaml` supports the following configuration:
 
