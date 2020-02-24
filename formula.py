@@ -43,5 +43,5 @@ def evaluate(expr, var):
     Note that vars will shadow any of the standard const/funcs, e.g., if a var 'pi'
     is included in the vars arg, it will shadow the standard math.pi value.
     '''
-    ret = eval(expr, get_gbl(), var)
+    ret = eval(expr, get_gbl(), var) # nosec (globals/locals constrained to safe subset)
     return ret

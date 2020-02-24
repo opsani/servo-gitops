@@ -307,7 +307,7 @@ class GitOps(Adjust):
         os.chdir(self.clone_dir)
         try:
             self._run_command(['git', 'diff-index', '--quiet', 'HEAD', '--'])
-        except Exception as e:
+        except Exception as e: # nosec (desired functionality, drops through to the add, commit, push logic)
             pass
         else:
             os.chdir(self.cwd)
@@ -396,7 +396,7 @@ class GitOps(Adjust):
     # expansion, etc.  The burden of safety is entirely on the user.
     def _run_shell_command(self, cmd, tout=None, cmd_type='Driver shell command'):
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            shell=True, timeout=tout, executable='/bin/bash')
+            shell=True, timeout=tout, executable='/bin/bash') # nosec (see shell=true disclaimer in above comment)
         msg = "cmd '{}', exit code {}, stdout {}, stderr {}".format(cmd,
             res.returncode, res.stdout, res.stderr)
         assert res.returncode == 0, '{} failed:  {}'.format(cmd_type, msg)
